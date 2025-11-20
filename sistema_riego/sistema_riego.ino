@@ -1,0 +1,513 @@
+/*
+ * Sistema de Riego Automatizado con ESP32
+ * Autor: Sistema Automatizado
+ * Fecha: 2025
+ *
+ * Descripción:
+ * Sistema completo de riego con sensores IoT, almacenamiento de datos históricos,
+ * alertas automáticas y interfaz web responsive
+ *
+ * Librerías requeridas (instalar desde Arduino IDE):
+ * - ESPAsyncWebServer by me-no-dev
+ * - AsyncTCP by me-no-dev
+ * - ArduinoJson by Benoit Blanchon
+ * - DHT sensor library by Adafruit (para sensor de temperatura/humedad)
+ */
+
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+#include <time.h>
+
+// ========== CONFIGURACIÓN WiFi ==========
+const char* ssid = "David";           // Cambiar por tu red WiFi
+const char* password = "pepe29383";      // Cambiar por tu contraseña
+
+// ========== CONFIGURACIÓN DE PINES ==========
+#define PIN_HUMEDAD_SUELO 34      // Pin analógico para sensor de humedad del suelo
+#define PIN_TEMPERATURA 35        // Pin analógico para sensor de temperatura (ej: LM35)
+#define PIN_RELE_BOMBA 26         // Pin digital para controlar el relé de la bomba
+#define PIN_LED_ALERTA 27         // LED indicador de alerta
+
+// ========== PARÁMETROS DEL SISTEMA ==========
+#define UMBRAL_HUMEDAD_BAJA 30    // Porcentaje de humedad para activar alerta
+#define UMBRAL_HUMEDAD_ALTA 70    // Porcentaje de humedad óptima
+#define INTERVALO_LECTURA 5000    // Intervalo de lectura de sensores (ms)
+#define MAX_REGISTROS_HISTORICOS 1000  // Máximo de registros en memoria
+
+// ========== SERVIDOR WEB ==========
+AsyncWebServer server(80);
+
+// ========== VARIABLES GLOBALES ==========
+float humedadSuelo = 0;
+float temperatura = 0;
+bool bombActivada = false;
+bool alertaActiva = false;
+String ultimaAlerta = "";
+unsigned long ultimaLectura = 0;
+int registrosGuardados = 0;
+
+// Configuración del sistema
+struct Config {
+  int umbralHumedadBaja = 30;
+  int umbralHumedadAlta = 70;
+  int intervaloRiego = 60;  // minutos
+  bool modoAutomatico = true;
+  String horaRiego1 = "07:00";
+  String horaRiego2 = "19:00";
+};
+
+Config config;
+
+// ========== FUNCIONES DE INICIALIZACIÓN ==========
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configurar pines
+  pinMode(PIN_RELE_BOMBA, OUTPUT);
+  pinMode(PIN_LED_ALERTA, OUTPUT);
+  digitalWrite(PIN_RELE_BOMBA, LOW);
+  digitalWrite(PIN_LED_ALERTA, LOW);
+
+  // Inicializar LittleFS
+  if (!LittleFS.begin(true)) {
+    Serial.println("Error al montar LittleFS");
+    return;
+  }
+  Serial.println("LittleFS montado correctamente");
+
+  // Cargar configuración
+  cargarConfiguracion();
+
+  // Inicializar archivos de datos si no existen
+  inicializarArchivoDatos();
+
+  // Conectar a WiFi
+  conectarWiFi();
+
+  // Configurar servidor web
+  configurarServidorWeb();
+
+  // Iniciar servidor
+  server.begin();
+  Serial.println("Servidor web iniciado");
+
+  // Configurar tiempo NTP
+  configTime(0, 0, "pool.ntp.org");
+
+  Serial.println("Sistema de riego iniciado correctamente");
+}
+
+void conectarWiFi() {
+  Serial.print("Conectando a WiFi");
+  WiFi.begin(ssid, password);
+
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(500);
+    Serial.print(".");
+    intentos++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi conectado");
+    Serial.print("Dirección IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nError al conectar WiFi");
+  }
+}
+
+// ========== CONFIGURACIÓN DEL SERVIDOR WEB ==========
+
+void configurarServidorWeb() {
+  // Servir archivos estáticos desde LittleFS
+  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+  // ===== ENDPOINTS API REST =====
+
+  // GET /api/datos - Obtener datos actuales de sensores
+  server.on("/api/datos", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<300> doc;
+    doc["humedad"] = humedadSuelo;
+    doc["temperatura"] = temperatura;
+    doc["bomba"] = bombActivada;
+    doc["alerta"] = alertaActiva;
+    doc["ultimaAlerta"] = ultimaAlerta;
+    doc["timestamp"] = obtenerTimestamp();
+
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  // GET /api/config - Obtener configuración actual
+  server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<400> doc;
+    doc["umbralHumedadBaja"] = config.umbralHumedadBaja;
+    doc["umbralHumedadAlta"] = config.umbralHumedadAlta;
+    doc["intervaloRiego"] = config.intervaloRiego;
+    doc["modoAutomatico"] = config.modoAutomatico;
+    doc["horaRiego1"] = config.horaRiego1;
+    doc["horaRiego2"] = config.horaRiego2;
+
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  // POST /api/config - Actualizar configuración
+  server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      StaticJsonDocument<400> doc;
+      deserializeJson(doc, (const char*)data);
+
+      if (doc.containsKey("umbralHumedadBaja")) config.umbralHumedadBaja = doc["umbralHumedadBaja"];
+      if (doc.containsKey("umbralHumedadAlta")) config.umbralHumedadAlta = doc["umbralHumedadAlta"];
+      if (doc.containsKey("intervaloRiego")) config.intervaloRiego = doc["intervaloRiego"];
+      if (doc.containsKey("modoAutomatico")) config.modoAutomatico = doc["modoAutomatico"];
+      if (doc.containsKey("horaRiego1")) config.horaRiego1 = doc["horaRiego1"].as<String>();
+      if (doc.containsKey("horaRiego2")) config.horaRiego2 = doc["horaRiego2"].as<String>();
+
+      guardarConfiguracion();
+      request->send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+  // POST /api/bomba - Controlar bomba manualmente
+  server.on("/api/bomba", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      StaticJsonDocument<100> doc;
+      deserializeJson(doc, (const char*)data);
+
+      bool estado = doc["estado"];
+      controlarBomba(estado);
+
+      request->send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+  // GET /api/historico - Obtener datos históricos
+  server.on("/api/historico", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (LittleFS.exists("/data/historico.csv")) {
+      request->send(LittleFS, "/data/historico.csv", "text/csv");
+    } else {
+      request->send(404, "application/json", "{\"error\":\"No hay datos históricos\"}");
+    }
+  });
+
+  // GET /api/estadisticas - Obtener estadísticas del sistema
+  server.on("/api/estadisticas", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<500> doc = calcularEstadisticas();
+
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  // DELETE /api/historico - Borrar datos históricos
+  server.on("/api/historico", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    if (LittleFS.exists("/data/historico.csv")) {
+      LittleFS.remove("/data/historico.csv");
+      inicializarArchivoDatos();
+      registrosGuardados = 0;
+    }
+    request->send(200, "application/json", "{\"status\":\"ok\"}");
+  });
+
+  // GET /api/alertas - Obtener alertas activas
+  server.on("/api/alertas", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<300> doc;
+    doc["alerta"] = alertaActiva;
+    doc["mensaje"] = ultimaAlerta;
+    doc["timestamp"] = obtenerTimestamp();
+
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+}
+
+// ========== FUNCIONES DE SENSORES ==========
+
+float leerHumedadSuelo() {
+  // Leer sensor analógico (0-4095 en ESP32)
+  int valorAnalogico = analogRead(PIN_HUMEDAD_SUELO);
+
+  // Convertir a porcentaje (ajustar según calibración de tu sensor)
+  // Valores típicos: 0 (muy seco) - 4095 (muy húmedo)
+  float porcentaje = map(valorAnalogico, 0, 4095, 0, 100);
+
+  // Invertir si el sensor mide resistencia (mayor valor = más seco)
+  // porcentaje = 100 - porcentaje;
+
+  return porcentaje;
+}
+
+float leerTemperatura() {
+  // Leer sensor analógico
+  int valorAnalogico = analogRead(PIN_TEMPERATURA);
+
+  // Para sensor LM35: 10mV por grado Celsius
+  // Voltaje = (valorAnalogico / 4095.0) * 3.3V
+  // Temperatura = Voltaje * 100
+  float temperatura = (valorAnalogico / 4095.0) * 3.3 * 100.0;
+
+  return temperatura;
+}
+
+void leerSensores() {
+  humedadSuelo = leerHumedadSuelo();
+  temperatura = leerTemperatura();
+
+  Serial.printf("Humedad: %.1f%% | Temperatura: %.1f°C\n", humedadSuelo, temperatura);
+
+  // Verificar alertas
+  verificarAlertas();
+
+  // Guardar datos históricos
+  guardarDatosHistoricos();
+}
+
+// ========== CONTROL DE BOMBA ==========
+
+void controlarBomba(bool estado) {
+  bombActivada = estado;
+  digitalWrite(PIN_RELE_BOMBA, estado ? HIGH : LOW);
+  Serial.println(estado ? "Bomba ACTIVADA" : "Bomba DESACTIVADA");
+
+  // Registrar evento
+  registrarEvento(estado ? "BOMBA_ON" : "BOMBA_OFF");
+}
+
+void controlarRiegoAutomatico() {
+  if (!config.modoAutomatico) return;
+
+  // Riego automático basado en humedad
+  if (humedadSuelo < config.umbralHumedadBaja && !bombActivada) {
+    controlarBomba(true);
+  } else if (humedadSuelo > config.umbralHumedadAlta && bombActivada) {
+    controlarBomba(false);
+  }
+}
+
+// ========== SISTEMA DE ALERTAS ==========
+
+void verificarAlertas() {
+  if (humedadSuelo < UMBRAL_HUMEDAD_BAJA) {
+    if (!alertaActiva) {
+      alertaActiva = true;
+      ultimaAlerta = "¡Alerta! Humedad del suelo muy baja: " + String(humedadSuelo, 1) + "%";
+      digitalWrite(PIN_LED_ALERTA, HIGH);
+      Serial.println(ultimaAlerta);
+    }
+  } else {
+    if (alertaActiva) {
+      alertaActiva = false;
+      ultimaAlerta = "";
+      digitalWrite(PIN_LED_ALERTA, LOW);
+    }
+  }
+}
+
+// ========== ALMACENAMIENTO DE DATOS ==========
+
+void inicializarArchivoDatos() {
+  if (!LittleFS.exists("/data/historico.csv")) {
+    File file = LittleFS.open("/data/historico.csv", "w");
+    if (file) {
+      file.println("timestamp,humedad,temperatura,bomba,alerta");
+      file.close();
+      Serial.println("Archivo histórico creado");
+    }
+  }
+}
+
+void guardarDatosHistoricos() {
+  if (registrosGuardados >= MAX_REGISTROS_HISTORICOS) {
+    // Rotar archivo: eliminar registros antiguos
+    rotarArchivoDatos();
+  }
+
+  File file = LittleFS.open("/data/historico.csv", "a");
+  if (file) {
+    String linea = obtenerTimestamp() + "," +
+                   String(humedadSuelo, 1) + "," +
+                   String(temperatura, 1) + "," +
+                   String(bombActivada ? 1 : 0) + "," +
+                   String(alertaActiva ? 1 : 0);
+    file.println(linea);
+    file.close();
+    registrosGuardados++;
+  }
+}
+
+void rotarArchivoDatos() {
+  // Leer últimos 500 registros y crear nuevo archivo
+  File fileOld = LittleFS.open("/data/historico.csv", "r");
+  File fileNew = LittleFS.open("/data/historico_temp.csv", "w");
+
+  if (fileOld && fileNew) {
+    String header = fileOld.readStringUntil('\n');
+    fileNew.println(header);
+
+    // Contar líneas
+    int totalLineas = 0;
+    while (fileOld.available()) {
+      fileOld.readStringUntil('\n');
+      totalLineas++;
+    }
+
+    // Volver al inicio (después del header)
+    fileOld.seek(header.length() + 1);
+
+    // Saltar líneas antiguas
+    int lineasASaltar = totalLineas - 500;
+    for (int i = 0; i < lineasASaltar && fileOld.available(); i++) {
+      fileOld.readStringUntil('\n');
+    }
+
+    // Copiar últimas 500 líneas
+    while (fileOld.available()) {
+      String linea = fileOld.readStringUntil('\n');
+      fileNew.println(linea);
+    }
+
+    fileOld.close();
+    fileNew.close();
+
+    LittleFS.remove("/data/historico.csv");
+    LittleFS.rename("/data/historico_temp.csv", "/data/historico.csv");
+
+    registrosGuardados = 500;
+    Serial.println("Archivo histórico rotado");
+  }
+}
+
+void registrarEvento(String evento) {
+  File file = LittleFS.open("/data/eventos.txt", "a");
+  if (file) {
+    file.printf("[%s] %s\n", obtenerTimestamp().c_str(), evento.c_str());
+    file.close();
+  }
+}
+
+// ========== CONFIGURACIÓN ==========
+
+void cargarConfiguracion() {
+  if (LittleFS.exists("/config/settings.json")) {
+    File file = LittleFS.open("/config/settings.json", "r");
+    if (file) {
+      StaticJsonDocument<512> doc;
+      deserializeJson(doc, file);
+
+      config.umbralHumedadBaja = doc["umbralHumedadBaja"] | 30;
+      config.umbralHumedadAlta = doc["umbralHumedadAlta"] | 70;
+      config.intervaloRiego = doc["intervaloRiego"] | 60;
+      config.modoAutomatico = doc["modoAutomatico"] | true;
+      config.horaRiego1 = doc["horaRiego1"] | "07:00";
+      config.horaRiego2 = doc["horaRiego2"] | "19:00";
+
+      file.close();
+      Serial.println("Configuración cargada");
+    }
+  } else {
+    guardarConfiguracion();  // Crear archivo con valores por defecto
+  }
+}
+
+void guardarConfiguracion() {
+  File file = LittleFS.open("/config/settings.json", "w");
+  if (file) {
+    StaticJsonDocument<512> doc;
+    doc["umbralHumedadBaja"] = config.umbralHumedadBaja;
+    doc["umbralHumedadAlta"] = config.umbralHumedadAlta;
+    doc["intervaloRiego"] = config.intervaloRiego;
+    doc["modoAutomatico"] = config.modoAutomatico;
+    doc["horaRiego1"] = config.horaRiego1;
+    doc["horaRiego2"] = config.horaRiego2;
+
+    serializeJson(doc, file);
+    file.close();
+    Serial.println("Configuración guardada");
+  }
+}
+
+// ========== ESTADÍSTICAS ==========
+
+StaticJsonDocument<500> calcularEstadisticas() {
+  StaticJsonDocument<500> doc;
+
+  float humedadPromedio = 0;
+  float temperaturaPromedio = 0;
+  int tiempoRiegoTotal = 0;
+  int totalRegistros = 0;
+
+  if (LittleFS.exists("/data/historico.csv")) {
+    File file = LittleFS.open("/data/historico.csv", "r");
+    if (file) {
+      file.readStringUntil('\n');  // Saltar header
+
+      while (file.available()) {
+        String linea = file.readStringUntil('\n');
+        int idx1 = linea.indexOf(',');
+        int idx2 = linea.indexOf(',', idx1 + 1);
+        int idx3 = linea.indexOf(',', idx2 + 1);
+        int idx4 = linea.indexOf(',', idx3 + 1);
+
+        if (idx1 > 0 && idx2 > 0 && idx3 > 0) {
+          float h = linea.substring(idx1 + 1, idx2).toFloat();
+          float t = linea.substring(idx2 + 1, idx3).toFloat();
+          int bomba = linea.substring(idx3 + 1, idx4).toInt();
+
+          humedadPromedio += h;
+          temperaturaPromedio += t;
+          if (bomba) tiempoRiegoTotal += 5;  // 5 segundos por registro
+          totalRegistros++;
+        }
+      }
+      file.close();
+
+      if (totalRegistros > 0) {
+        humedadPromedio /= totalRegistros;
+        temperaturaPromedio /= totalRegistros;
+      }
+    }
+  }
+
+  doc["humedadPromedio"] = humedadPromedio;
+  doc["temperaturaPromedio"] = temperaturaPromedio;
+  doc["tiempoRiegoTotal"] = tiempoRiegoTotal;  // en segundos
+  doc["totalRegistros"] = totalRegistros;
+  doc["usoAguaEstimado"] = (tiempoRiegoTotal / 60.0) * 10;  // Litros estimados (10L/min)
+
+  return doc;
+}
+
+// ========== UTILIDADES ==========
+
+String obtenerTimestamp() {
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+
+  char buffer[25];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+
+  return String(buffer);
+}
+
+// ========== LOOP PRINCIPAL ==========
+
+void loop() {
+  unsigned long ahora = millis();
+
+  // Leer sensores cada INTERVALO_LECTURA
+  if (ahora - ultimaLectura >= INTERVALO_LECTURA) {
+    ultimaLectura = ahora;
+    leerSensores();
+    controlarRiegoAutomatico();
+  }
+
+  // Pequeña pausa para no saturar el CPU
+  delay(100);
+}

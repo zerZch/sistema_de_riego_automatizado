@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Riego Automatizado</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- HEADER -->
+        <header>
+            <div class="header-content">
+                <h1>🌱 Sistema de Riego Automatizado</h1>
+                <div class="status-indicator">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Conectando...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- ALERTAS -->
+        <div id="alertContainer" class="alert-container hidden">
+            <div class="alert">
+                <span class="alert-icon">⚠️</span>
+                <div class="alert-content">
+                    <strong>Alerta del Sistema</strong>
+                    <p id="alertMessage"></p>
+                </div>
+                <button class="alert-close" onclick="cerrarAlerta()">✕</button>
+            </div>
+        </div>
+
+        <!-- PANEL DE CONTROL PRINCIPAL -->
+        <section class="dashboard">
+            <h2>Panel de Control</h2>
+
+            <div class="cards-grid">
+                <!-- CARD: Humedad del Suelo -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-icon">💧</span>
+                        <h3>Humedad del Suelo</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="sensor-value">
+                            <span class="value" id="humedadValue">--</span>
+                            <span class="unit">%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="humedadProgress"></div>
+                        </div>
+                        <p class="sensor-status" id="humedadStatus">Cargando...</p>
+                    </div>
+                </div>
+
+                <!-- CARD: Temperatura -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-icon">🌡️</span>
+                        <h3>Temperatura</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="sensor-value">
+                            <span class="value" id="temperaturaValue">--</span>
+                            <span class="unit">°C</span>
+                        </div>
+                        <div class="progress-bar temp">
+                            <div class="progress-fill" id="temperaturaProgress"></div>
+                        </div>
+                        <p class="sensor-status" id="temperaturaStatus">Cargando...</p>
+                    </div>
+                </div>
+
+                <!-- CARD: Estado de Bomba -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-icon">⚡</span>
+                        <h3>Bomba de Riego</h3>
+                    </div>
+                    <div class="card-body center">
+                        <div class="pump-status" id="pumpStatus">
+                            <div class="pump-icon" id="pumpIcon">🚰</div>
+                            <p id="pumpText">Desactivada</p>
+                        </div>
+                        <button class="btn btn-primary" id="togglePumpBtn" onclick="toggleBomba()">
+                            Activar Bomba
+                        </button>
+                    </div>
+                </div>
+
+                <!-- CARD: Recordatorios de Riego -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-icon">⏰</span>
+                        <h3>Recordatorios</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="reminders">
+                            <div class="reminder-item">
+                                <span class="reminder-time" id="riego1Time">07:00</span>
+                                <span class="reminder-label">Riego Matutino</span>
+                            </div>
+                            <div class="reminder-item">
+                                <span class="reminder-time" id="riego2Time">19:00</span>
+                                <span class="reminder-label">Riego Vespertino</span>
+                            </div>
+                            <p class="reminder-note">
+                                Próximo riego: <strong id="proximoRiego">--</strong>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CONFIGURACIÓN DEL SISTEMA -->
+        <section class="configuration">
+            <h2>⚙️ Configuración del Sistema</h2>
+
+            <div class="config-grid">
+                <div class="config-card">
+                    <h3>Parámetros de Riego</h3>
+                    <form id="configForm">
+                        <div class="form-group">
+                            <label for="umbralBajo">Umbral Humedad Baja (%):</label>
+                            <input type="number" id="umbralBajo" name="umbralBajo" min="0" max="100" value="30">
+                            <small>Activa alerta si la humedad cae por debajo</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="umbralAlto">Umbral Humedad Alta (%):</label>
+                            <input type="number" id="umbralAlto" name="umbralAlto" min="0" max="100" value="70">
+                            <small>Desactiva riego si supera este nivel</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="intervaloRiego">Intervalo de Riego (minutos):</label>
+                            <input type="number" id="intervaloRiego" name="intervaloRiego" min="1" max="1440" value="60">
+                            <small>Tiempo entre riegos automáticos</small>
+                        </div>
+
+                        <div class="form-group checkbox">
+                            <label>
+                                <input type="checkbox" id="modoAutomatico" name="modoAutomatico" checked>
+                                <span>Modo Automático</span>
+                            </label>
+                            <small>Riego basado en sensores</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="horaRiego1">Hora Riego 1:</label>
+                            <input type="time" id="horaRiego1" name="horaRiego1" value="07:00">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="horaRiego2">Hora Riego 2:</label>
+                            <input type="time" id="horaRiego2" name="horaRiego2" value="19:00">
+                        </div>
+
+                        <button type="submit" class="btn btn-success">Guardar Configuración</button>
+                    </form>
+                </div>
+            </div>
+        </section>
+
+        <!-- ESTADÍSTICAS -->
+        <section class="statistics">
+            <h2>📊 Estadísticas del Sistema</h2>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">💧</div>
+                    <div class="stat-content">
+                        <h4>Humedad Promedio</h4>
+                        <p class="stat-value" id="statHumedadProm">--</p>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">🌡️</div>
+                    <div class="stat-content">
+                        <h4>Temperatura Promedio</h4>
+                        <p class="stat-value" id="statTempProm">--</p>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">⏱️</div>
+                    <div class="stat-content">
+                        <h4>Tiempo Total de Riego</h4>
+                        <p class="stat-value" id="statTiempoRiego">--</p>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">💦</div>
+                    <div class="stat-content">
+                        <h4>Uso de Agua Estimado</h4>
+                        <p class="stat-value" id="statUsoAgua">--</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- GRÁFICOS HISTÓRICOS -->
+        <section class="charts">
+            <h2>📈 Historial de Datos</h2>
+
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <h3>Humedad del Suelo (últimas 24h)</h3>
+                    <canvas id="humedadChart"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <h3>Temperatura (últimas 24h)</h3>
+                    <canvas id="temperaturaChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-actions">
+                <button class="btn btn-secondary" onclick="descargarDatos()">
+                    📥 Descargar Datos CSV
+                </button>
+                <button class="btn btn-danger" onclick="borrarHistorico()">
+                    🗑️ Borrar Histórico
+                </button>
+            </div>
+        </section>
+
+        <!-- FOOTER -->
+        <footer>
+            <p>Sistema de Riego Automatizado con ESP32 | Última actualización: <span id="lastUpdate">--</span></p>
+            <p class="footer-note">Los datos se actualizan cada 5 segundos</p>
+        </footer>
+    </div>
+
+    <!-- SCRIPTS -->
+    <script src="/js/app.js"></script>
+    <script src="/js/charts.js"></script>
+</body>
+</html>

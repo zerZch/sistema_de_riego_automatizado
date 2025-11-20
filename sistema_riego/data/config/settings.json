@@ -1,0 +1,8 @@
+{
+  "umbralHumedadBaja": 30,
+  "umbralHumedadAlta": 70,
+  "intervaloRiego": 60,
+  "modoAutomatico": true,
+  "horaRiego1": "07:00",
+  "horaRiego2": "19:00"
+}
