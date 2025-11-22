@@ -42,7 +42,9 @@ float temperatura = 0;
 bool alertaActiva = false;
 String ultimaAlerta = "";
 unsigned long ultimaLectura = 0;
+unsigned long ultimoStatusWiFi = 0;
 int registrosGuardados = 0;
+bool primeraLectura = true;
 
 // Configuración del sistema
 struct Config {
@@ -56,6 +58,7 @@ Config config;
 
 // ========== PROTOTIPOS DE FUNCIONES ==========
 void conectarWiFi();
+void verificarConexionWiFi();
 void configurarServidorWeb();
 float leerHumedadSuelo();
 float leerTemperatura();
@@ -105,22 +108,55 @@ void setup() {
 }
 
 void conectarWiFi() {
-  Serial.print("Conectando a WiFi");
+  Serial.println();
+  Serial.println("========================================");
+  Serial.print("Conectando a WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
   int intentos = 0;
-  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+  while (WiFi.status() != WL_CONNECTED && intentos < 30) {
     delay(500);
     Serial.print(".");
     intentos++;
   }
 
+  Serial.println();
+
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi conectado");
-    Serial.print("Dirección IP: ");
+    Serial.println("========================================");
+    Serial.println("        WiFi CONECTADO!");
+    Serial.println("========================================");
+    Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+    Serial.print("RSSI: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+    Serial.println("========================================");
   } else {
-    Serial.println("\nError al conectar WiFi");
+    Serial.println("ERROR: No se pudo conectar al WiFi");
+    Serial.println("Continuando sin WiFi...");
+  }
+}
+
+void verificarConexionWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi desconectado. Reconectando...");
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
+
+    int intentos = 0;
+    while (WiFi.status() != WL_CONNECTED && intentos < 10) {
+      delay(500);
+      intentos++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("Reconectado! IP: ");
+      Serial.println(WiFi.localIP());
+    }
   }
 }
 
@@ -244,10 +280,20 @@ float leerTemperatura() {
 }
 
 void leerSensores() {
+  float humedadAnterior = humedadSuelo;
+  float temperaturaAnterior = temperatura;
+
   humedadSuelo = leerHumedadSuelo();
   temperatura = leerTemperatura();
 
-  Serial.printf("Humedad: %.1f%% | Temperatura: %.1f°C\n", humedadSuelo, temperatura);
+  // Solo imprimir si es la primera lectura o si hay cambio significativo (>1%)
+  if (primeraLectura ||
+      abs(humedadSuelo - humedadAnterior) > 1.0 ||
+      abs(temperatura - temperaturaAnterior) > 0.5) {
+
+    Serial.printf("Humedad: %.1f%% | Temperatura: %.1f°C\n", humedadSuelo, temperatura);
+    primeraLectura = false;
+  }
 
   // Verificar alertas
   verificarAlertas();
@@ -459,6 +505,12 @@ void loop() {
     leerSensores();
   }
 
-  // Pequeña pausa para no saturar el CPU
-  delay(100);
+  // Verificar conexión WiFi cada 30 segundos
+  if (ahora - ultimoStatusWiFi >= 30000) {
+    ultimoStatusWiFi = ahora;
+    verificarConexionWiFi();
+  }
+
+  // yield() permite que el ESP32 maneje tareas internas sin bloquear
+  yield();
 }
